@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sqlite-cage"
+version = "0.1.0"
+description = "Run untrusted SQL against SQLite safely and honestly — the query protections of Datasette, without Datasette."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Michael Halle" }]
+keywords = ["sqlite", "sql", "sandbox", "security", "llm", "agent", "mcp",
+            "datasette", "read-only", "fts5"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+dependencies = []                      # stdlib only, on purpose
+
+[project.urls]
+Homepage = "https://github.com/mhalle/sqlite-cage"
+Repository = "https://github.com/mhalle/sqlite-cage"
+Issues = "https://github.com/mhalle/sqlite-cage/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sqlite_cage"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# The test/fuzz code deliberately uses broad excepts (to prove NO raw error
+# escapes) and throwaway names; keep the src strict, relax the harness.
+ignore = ["E741", "SIM102"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["BLE001", "E501", "B007", "F841", "SIM", "C408", "EXE001", "ISC004", "RUF059"]
