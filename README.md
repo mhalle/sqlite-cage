@@ -104,6 +104,78 @@ Degenerate values are rejected at construction (fail-closed), and the ACL is
 snapshotted immutably — mutating the policy afterward cannot loosen
 enforcement.
 
+## API reference
+
+### `Cage(path, policy=None)`
+
+Opens `path` read-only and immutable. Raises `FileNotFoundError` if it is
+missing, or a `CageError` if it cannot be opened. Construct one cage per trust
+level and reuse it; it owns a small connection pool.
+
+| method | returns | notes |
+|---|---|---|
+| `query(sql, params=())` | `list[dict]` | **Raises `TruncatedResult`** past `max_rows`. Use when rows are treated as complete. |
+| `fetch(sql, params=())` | `Result` | Never raises on truncation — carries an explicit signal instead. |
+| `stream(sql, params=())` | `Iterator[dict]` | Lazy; holds a connection for the iterator's life. Raises `TruncatedResult` past `max_rows`. |
+| `explain(sql, params=())` | `None` | Compile-only pre-flight: runs the authorizer and limits, executes nothing. Raises if the query would be denied or is malformed. |
+| `aquery(sql, params=())` | `list[dict]` | async `query()` over a bounded executor. |
+| `afetch(sql, params=())` | `Result` | async `fetch()`. |
+| `close()` | `None` | Releases pooled connections and the async executor. |
+
+`params` is bound, never interpolated — pass a tuple for `?` placeholders or a
+dict for `:name` placeholders.
+
+### `Result`
+
+Returned by `fetch()` / `afetch()`. Immutable.
+
+| member | meaning |
+|---|---|
+| `rows` | `tuple[dict, ...]` — the rows, capped at `limit` |
+| `truncated` | `True` iff **strictly more** than `limit` rows exist |
+| `complete` | `not truncated` |
+| `returned` | `len(rows)` |
+| `limit` | the `max_rows` in force |
+| `query` | the SQL as written |
+| `note` | actionable caveat string when truncated, else `None` |
+| `envelope()` | JSON-safe `dict` — `{rows, returned, truncated, limit, note?}`; BLOBs become `{"$blob": {"bytes", "base64"}}` |
+| iteration | `for row in result` yields rows (never the flag) |
+
+### `CagePolicy` fields
+
+| field | default | bounds |
+|---|---|---|
+| `deadline_s` | `1.0` | wall-clock timeout per query |
+| `max_rows` | `1000` | row cap → truncation |
+| `max_result_bytes` | `8 MiB` | result byte budget, counted while fetching |
+| `max_concurrency` | `3` | simultaneous queries (pool + semaphore) |
+| `max_columns` | `64` | result-column ceiling (checked pre-fetch) |
+| `max_length` | `1_000_000` | largest single string/blob value |
+| `max_sql_bytes` | `100_000` | max length of the SQL text |
+| `max_expr_depth` | `200` | expression-tree depth |
+| `max_compound_select` | `50` | terms in a compound SELECT |
+| `progress_every_ops` | `5000` | VDBE ops between deadline checks |
+| `deny_functions` | `{"randomblob","zeroblob"}` | SQL functions to deny |
+| `table_acl` | `{}` | `{table: {"deny_columns": {...}}}` (NULL the column) or `{table: None}` (hide the table) |
+| `slow_log` | `None` | `callable(elapsed_s, sql)` for queries over `slow_log_s` |
+| `slow_log_s` | `1.5` | slow-query threshold |
+
+Every numeric field is validated at construction; an out-of-range value raises
+`ValueError` rather than silently disabling a guard.
+
+### Exceptions
+
+All inherit `CageError`, which carries the offending query as `.query`. No
+failure path ever returns an empty result.
+
+| exception | raised when |
+|---|---|
+| `QueryDenied` | the authorizer refused an operation (write, PRAGMA, ATTACH, denied function, ACL-hidden table) |
+| `QueryTimeout` | the `deadline_s` wall-clock limit elapsed |
+| `TruncatedResult` | `query()`/`stream()` hit `max_rows` (use `fetch()` to accept a partial) |
+| `ResultBudgetExceeded` | the byte budget or column ceiling was crossed |
+| `QueryError` | anything else SQLite raised (syntax, missing table, bad params) |
+
 ## Assurance
 
 The threat model and what is explicitly **out** of scope (a hostile operator,
