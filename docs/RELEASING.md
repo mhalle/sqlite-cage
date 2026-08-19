@@ -49,7 +49,11 @@ git add -A && git commit -m "Release X.Y.Z"
 git tag -a vX.Y.Z -m "sqlite-cage X.Y.Z"
 git push origin main --follow-tags
 
-# 4. wait for CI on the tag to go green, then publish the GitHub release
+# 4. publish the GitHub release. NOTE: ci.yml triggers on `push: branches:
+#    [main]` and pull_request only — it does NOT run on tags. So confirm the
+#    green run on the *release commit* (`gh run list --limit 1`); there will
+#    never be a separate run for the tag. `gh run list --commit <sha>` does
+#    not match reliably — read the run title instead.
 gh release create vX.Y.Z \
   --title "sqlite-cage X.Y.Z" \
   --notes-file <(sed -n '/## \[X.Y.Z\]/,/## \[/p' CHANGELOG.md | sed '$d')
