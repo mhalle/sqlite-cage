@@ -1,23 +1,25 @@
-"""sqlcage — run untrusted SQL against SQLite, safely and honestly.
+"""sqlite-cage — run untrusted SQL against SQLite, safely and honestly.
 
-Design and rationale: docs/SQLCAGE_DESIGN.md. Seven layers, ordered by when
-they act: read-only+immutable open; DEFENSIVE dbconfig; hard limits
-(ATTACHED=0, blob length, expression depth); a deny-by-default authorizer at
-compile time; single-statement by construction; a progress-handler deadline;
-and a result budget counted in BYTES as well as rows while fetching.
+README.md is the guide; docs/THREAT_MODEL.md is the boundary. Layers, ordered
+by when they act: read-only+immutable open; DEFENSIVE dbconfig; hard limits
+(ATTACHED=0, value length, column count, expression depth); a deny-by-default
+authorizer at compile time; single-statement by construction; a progress-
+handler deadline; and a result budget counted in BYTES as well as rows while
+fetching.
 
-The honesty contract is not optional: truncation RAISES unless the caller
-explicitly opts into partial results, and no failure path ever returns an
-empty list. Both rules were earned: a truncated coverage() once reported a
-corpus ended in 1907 (250 rows of 1,205), and a swallowed FTS error read as
-a genuine absence.
+The honesty contract is not optional: truncation RAISES from query()/stream()
+unless the caller uses fetch() to accept a signalled partial, and no failure
+path ever returns an empty list.
 
-Stdlib only. Python floor 3.11 (setlimit); 3.12+ adds DEFENSIVE.
+Stdlib only — no dependencies. Python floor 3.11 (setlimit); 3.12+ adds
+DEFENSIVE. Vendorable: copying this single file into a project is supported.
 """
 from __future__ import annotations
 
 import re
 import sqlite3
+
+__version__ = "0.1.0"
 import sys
 import threading
 import time

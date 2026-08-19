@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqlite-cage"
-version = "0.1.0"
+dynamic = ["version"]                  # single-sourced from the module's __version__
 description = "Run untrusted SQL against SQLite safely and honestly — the query protections of Datasette, without Datasette."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,9 @@ Issues = "https://github.com/mhalle/sqlite-cage/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+
+[tool.hatch.version]
+path = "src/sqlite_cage/__init__.py"   # reads __version__
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sqlite_cage"]
