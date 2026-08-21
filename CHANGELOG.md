@@ -1,5 +1,7 @@
 # Changelog
 
+## [next] — unreleased
+
 ## [0.2.0] — 2026-08-20
 
 Round 4: hardening from an independent external review. Two breaking-ish
