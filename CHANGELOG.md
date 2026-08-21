@@ -2,6 +2,14 @@
 
 ## [next] — unreleased
 
+- Documentation completeness pass: `QueryError`'s duplicate-column refusal
+  documented in the README (exceptions table and a fourth honesty-contract
+  bullet); the planner-statistics residual (`sqlite_stat1` row counts,
+  STAT4 sampled key values) recorded in the threat model with its ACL
+  remediation; the stopping-rule narrative corrected — the R4.6
+  duplicate-name find was in the settled 0.1.0 core, not the new code;
+  `CagePolicy` gained a class docstring; tag-pinned install example.
+
 ## [0.2.0] — 2026-08-20
 
 Round 4: hardening from an independent external review. Two breaking-ish

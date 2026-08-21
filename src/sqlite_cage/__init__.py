@@ -119,6 +119,17 @@ _ALLOWED_OPS = {
 
 @dataclass(frozen=True)
 class CagePolicy:
+    """Every enforcement knob, validated strictly at construction.
+
+    Frozen, and the collections are normalised to frozensets — so later
+    mutation (or a one-shot iterable that validates once and iterates empty)
+    cannot weaken enforcement. Every field is checked for range AND type; a
+    degenerate value (0, -1, bool, inf, nan, a bare string where a
+    collection belongs) raises ValueError instead of silently disabling a
+    guard. One sizing relationship to know: max_columns × max_length bounds
+    the worst single row the engine can assemble before the byte budget
+    applies — 128 MiB with the defaults; shrink either on tight hosts.
+    """
     deadline_s: float = 1.0
     max_rows: int = 1_000
     max_result_bytes: int = 64 << 20           # 64 MiB result budget

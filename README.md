@@ -66,6 +66,9 @@ time does not.
 - **No error is ever an empty result.** Every failure raises a typed
   `CageError` carrying the query as written; nothing returns `[]` on the
   error path.
+- **No silent column loss.** Rows are dicts, so two result columns sharing a
+  name could keep only one value — `SELECT a.id, b.id FROM a JOIN b` would
+  quietly drop a column. The cage raises instead, with an aliasing hint.
 
 ```python
 res = cage.fetch("SELECT * FROM books")
@@ -202,7 +205,7 @@ Returned by `fetch()` / `afetch()`. Immutable.
 | `max_function_args` | `64` | arguments to one SQL function |
 | `max_bound_params` | `999` | highest `?NNN` parameter number (`?NNN` allocates an NNN-slot vector) |
 | `progress_every_ops` | `5000` | VDBE ops between deadline checks |
-| `deny_functions` | `{"randomblob","zeroblob"}` | SQL functions to deny |
+| `deny_functions` | `{"randomblob","zeroblob"}` | SQL functions to deny (matched ASCII case-insensitively) |
 | `table_acl` | `{}` | `{table: {"deny_columns": {...}}}` (NULL the column) or `{table: None}` (hide the table); names are validated against the schema and matched with SQLite's ASCII case-insensitivity |
 | `slow_log` | `None` | `callable(elapsed_s, sql)` for queries over `slow_log_s` |
 | `slow_log_s` | `1.5` | slow-query threshold |
@@ -230,7 +233,7 @@ failure path ever returns an empty result.
 | `QueryTimeout` | the `deadline_s` wall-clock limit elapsed |
 | `TruncatedResult` | `query()`/`stream()` hit `max_rows` (use `fetch()` to accept a partial) |
 | `ResultBudgetExceeded` | the byte budget or column ceiling was crossed |
-| `QueryError` | anything else SQLite raised (syntax, missing table, bad params) |
+| `QueryError` | anything else SQLite raised (syntax, missing table, bad params) — plus the cage's own refusal of a result with duplicate column names, which dict rows cannot carry without silent loss |
 
 ## Assurance
 
@@ -262,6 +265,12 @@ Not yet on PyPI. Install from GitHub:
 
 ```
 pip install "sqlite-cage @ git+https://github.com/mhalle/sqlite-cage"
+```
+
+Or pin a released tag:
+
+```
+pip install "sqlite-cage @ git+https://github.com/mhalle/sqlite-cage@v0.2.0"
 ```
 
 Or vendor it — it is a single stdlib-only module (`src/sqlite_cage/__init__.py`),

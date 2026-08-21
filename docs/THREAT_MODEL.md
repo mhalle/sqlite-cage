@@ -71,7 +71,15 @@ isolation (see out-of-scope №2).
 5. **Timing / oracle side channels beyond the ones fixed.** The FTS MATCH
    oracle was closed because it directly recovered hidden text; subtler
    statistical side channels (row-count timing, planner behaviour) are not
-   claimed to be eliminated.
+   claimed to be eliminated. One concrete, nameable instance: SQLite's
+   planner statistics are ordinary readable tables. `sqlite_stat1` (present
+   after `ANALYZE`) reveals per-index row counts of tables the ACL hides,
+   and `sqlite_stat4` (only in builds compiled with STAT4) stores *sampled
+   key values* of indexed columns — including masked or hidden ones. The
+   cage does not deny them automatically; a deployment whose database
+   carries ANALYZE statistics alongside an ACL should hide them explicitly
+   (`table_acl={"sqlite_stat1": None, ...}` — they validate like any
+   table).
 6. **Denial of service by legitimate-looking load.** The cage bounds one
    query and total concurrency, not an attacker issuing a flood of
    individually-valid slow queries. Rate limiting belongs one layer up.
@@ -119,4 +127,7 @@ with it a new input path). Follow-up passes over the round-4 work itself
 (R4.2's mutable-policy resolve, R4.3's fail-open failed refresh, duplicate
 ACL keys, and the uninterruptible busy wait) each broke the newest code, not
 the settled core — the pattern the stopping rule predicts, and the reason
-new surfaces get review before they get trusted.
+new surfaces get review before they get trusted. One find keeps that claim
+honest by breaking it: the duplicate-result-name silent data loss (R4.6)
+had sat in the dict-row core since 0.1.0, through every earlier round —
+absence of findings in settled code is still not evidence of their absence.
