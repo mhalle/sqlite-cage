@@ -45,14 +45,14 @@ time does not.
 
 | layer | mechanism |
 |---|---|
-| read-only | `mode=ro&immutable=1` open — no writes, no locks |
-| deny-by-default authorizer | only plain reads, functions, and `WITH RECURSIVE`; everything else (PRAGMA, ATTACH, writes, extension loads) denied at compile time |
+| read-only | `mode=ro` open — WAL-aware, safe alongside writers. `immutable=True` is **opt-in** for truly frozen files: it skips locking and ignores `-wal`/`-journal`, which on a changing database means stale or wrong reads |
+| deny-by-default authorizer | only plain reads, functions, and `WITH RECURSIVE`; everything else (PRAGMA, ATTACH, writes, extension loads) denied at compile time. Two deliberate exceptions: the read-only `data_version` / `schema_version` counters stay readable (FTS5 and the cage's own schema-epoch check need them; they expose change *counters*, never contents) |
 | single statement | multi-statement strings refused by construction |
-| runaway CPU | a wall-clock deadline via the progress handler, interval scaled to the deadline |
-| result memory | a row cap **and** a byte budget counted while fetching, plus a pre-fetch column-count ceiling (a 1-row × 2000-column result can blow RAM past a row cap alone) |
+| runaway CPU | a wall-clock deadline via the progress handler, interval scaled to the deadline; SQLite's busy wait on a locked database is capped at `deadline_s` too (its 5 s default is uninterruptible). The bound is approximate: under lock contention total wall-clock is a small multiple of `deadline_s`, not an exact cutoff |
+| result memory | a row cap **and** a byte budget counted while fetching, plus a column-count ceiling enforced by the engine **at prepare time** — before SQLite materialises the first row, which Python's `execute()` otherwise does no matter how large it is |
 | concurrency | a bounded connection pool and semaphore; the async facade queues rather than fails under burst |
-| per-table / per-column ACL | hide a column (read as NULL) or a whole table — and the FTS5 shadow tables and `MATCH` oracle that would otherwise recover a hidden column's text |
-| defensive mode | `SQLITE_DBCONFIG_DEFENSIVE` on 3.12+ |
+| per-table / per-column ACL | hide a column (read as NULL) or a whole table — validated against the real schema, extended to the FTS3/4/5 shadow tables and `MATCH` oracle that would otherwise recover a hidden column's text (shadow/virtual relations enumerated by the engine itself via `PRAGMA table_list`, not name patterns), and refreshed per execution when a live writer changes the schema |
+| defensive mode | `SQLITE_DBCONFIG_DEFENSIVE` (unconditional — the Python 3.12 floor guarantees it), plus `PRAGMA query_only` (an engine-level write barrier under the authorizer), `PRAGMA trusted_schema=OFF` (functions/vtables embedded in the schema run untrusted), and `PRAGMA cell_size_check=ON` (malformed pages surface as clean `SQLITE_CORRUPT`) — none revertible by the caged caller |
 
 ## The honesty contract
 
@@ -92,25 +92,68 @@ one for your own known-shaped queries):
 
 ```python
 CagePolicy(
-    deadline_s=1.0, max_rows=1000, max_result_bytes=8 << 20,
-    max_concurrency=3, max_columns=64,
+    deadline_s=1.0, max_rows=1000, max_result_bytes=64 << 20,
+    max_concurrency=3, max_columns=256,
     deny_functions=frozenset({"randomblob", "zeroblob"}),
     table_acl={"users": {"deny_columns": {"email"}}},   # or {"users": None}
     slow_log=lambda secs, sql: log.warning("slow %.1fs %s", secs, sql),
 )
 ```
 
-Degenerate values are rejected at construction (fail-closed), and the ACL is
+Degenerate values are rejected at construction (fail-closed) with strict
+types — `True`, `inf`, `nan`, floats for counts, or a bare string where a
+collection of names belongs all raise instead of quietly weakening a guard —
+and the collections are normalised to frozensets, so a one-shot iterable
+cannot validate as configured and then enforce as empty. The ACL is
 snapshotted immutably — mutating the policy afterward cannot loosen
-enforcement.
+enforcement — and it is validated against the actual schema when the `Cage`
+is built: a typo'd table or column name raises `ValueError` rather than
+silently protecting nothing.
+
+One sizing relationship to know: `max_columns × max_length` bounds the worst
+single row SQLite can assemble before the byte budget applies — 256 × 512 KiB
+= 128 MiB with the defaults. On a memory-tight host shrink either; both are
+plain policy fields.
 
 ## API reference
 
-### `Cage(path, policy=None)`
+### `Cage(path, policy=None, *, immutable=False)`
 
-Opens `path` read-only and immutable. Raises `FileNotFoundError` if it is
-missing, or a `CageError` if it cannot be opened. Construct one cage per trust
-level and reuse it; it owns a small connection pool.
+Opens `path` read-only (the path is resolved once, so later `chdir()` cannot
+redirect it, and awkward filenames — `?`, `#`, `%` — are escaped correctly).
+Raises `FileNotFoundError` if it is missing, `ValueError` if it is not a
+regular file, or a `CageError` if it cannot be opened. Construct one cage per
+trust level and reuse it; it owns a small connection pool. Requires Python ≥
+3.12 and SQLite ≥ 3.37.0 (both checked at import).
+
+Pass `immutable=True` (a real bool — anything else raises) **only** for a
+file that cannot change by any means while the cage lives (a baked corpus, a
+read-only container image): SQLite then skips locking and ignores
+`-wal`/`-journal` entirely, which is faster — and wrong on a database that
+changes.
+
+Live writers are supported in the default mode: each execution checks the
+database's `schema_version`, and when a writer has changed the schema the
+cage rebuilds its ACL/FTS snapshots before running the query. If the new
+schema no longer satisfies `table_acl` (a protected table was dropped),
+queries fail closed until a new cage is built. This covers a *reasonable*
+writer evolving the schema — an adversarial writer racing the cage is out of
+scope (see the threat model).
+
+`refresh()` triggers that same rebuild on demand. Its main job is the one
+case the automatic check cannot see: an `immutable=True` cage whose file was
+atomically **replaced** (immutable connections never re-read the header, so
+the swap is otherwise invisible) — republish the corpus file, call
+`refresh()`, and subsequent queries read the new one. It also surfaces an
+ACL that no longer resolves as an eager `ValueError` instead of at the next
+query. A **failed** rebuild taints the cage: every query raises until a
+rebuild succeeds (queries retry the rebuild themselves, so restoring a
+compatible file heals it) — never the old data, which is the point when the
+replacement was a revocation.
+
+A cage is a context manager; after `close()` (explicit or via `with`), every
+call raises `CageError` — in-flight queries finish, and their connections are
+closed at check-in rather than re-pooled.
 
 | method | returns | notes |
 |---|---|---|
@@ -120,7 +163,8 @@ level and reuse it; it owns a small connection pool.
 | `explain(sql, params=())` | `None` | Compile-only pre-flight: runs the authorizer and limits, executes nothing. Raises if the query would be denied or is malformed. |
 | `aquery(sql, params=())` | `list[dict]` | async `query()` over a bounded executor. |
 | `afetch(sql, params=())` | `Result` | async `fetch()`. |
-| `close()` | `None` | Releases pooled connections and the async executor. |
+| `refresh()` | `None` | Re-read the schema now: rebuild the ACL/FTS snapshots and retire existing connections. Raises `ValueError` if `table_acl` no longer resolves (queries then keep failing closed). |
+| `close()` | `None` | Closes the cage (idempotent); also runs on `with`-exit. |
 
 `params` is bound, never interpolated — pass a tuple for `?` placeholders or a
 dict for `:name` placeholders.
@@ -145,23 +189,35 @@ Returned by `fetch()` / `afetch()`. Immutable.
 
 | field | default | bounds |
 |---|---|---|
-| `deadline_s` | `1.0` | wall-clock timeout per query |
+| `deadline_s` | `1.0` | wall-clock timeout per query (also caps SQLite's busy wait); approximate under lock contention — a small multiple, not exact |
 | `max_rows` | `1000` | row cap → truncation |
-| `max_result_bytes` | `8 MiB` | result byte budget, counted while fetching |
+| `max_result_bytes` | `64 MiB` | result byte budget, counted while fetching |
 | `max_concurrency` | `3` | simultaneous queries (pool + semaphore) |
-| `max_columns` | `64` | result-column ceiling (checked pre-fetch) |
-| `max_length` | `1_000_000` | largest single string/blob value |
+| `max_columns` | `256` | result-column ceiling, enforced by the engine at prepare time |
+| `max_length` | `512 KiB` | largest single string/blob value (and, per SQLite semantics, one stored table row) |
 | `max_sql_bytes` | `100_000` | max length of the SQL text |
 | `max_expr_depth` | `200` | expression-tree depth |
 | `max_compound_select` | `50` | terms in a compound SELECT |
+| `max_like_pattern` | `1_000` | LIKE/GLOB pattern bytes (long patterns match in O(N×M)) |
+| `max_function_args` | `64` | arguments to one SQL function |
+| `max_bound_params` | `999` | highest `?NNN` parameter number (`?NNN` allocates an NNN-slot vector) |
 | `progress_every_ops` | `5000` | VDBE ops between deadline checks |
 | `deny_functions` | `{"randomblob","zeroblob"}` | SQL functions to deny |
-| `table_acl` | `{}` | `{table: {"deny_columns": {...}}}` (NULL the column) or `{table: None}` (hide the table) |
+| `table_acl` | `{}` | `{table: {"deny_columns": {...}}}` (NULL the column) or `{table: None}` (hide the table); names are validated against the schema and matched with SQLite's ASCII case-insensitivity |
 | `slow_log` | `None` | `callable(elapsed_s, sql)` for queries over `slow_log_s` |
 | `slow_log_s` | `1.5` | slow-query threshold |
 
-Every numeric field is validated at construction; an out-of-range value raises
-`ValueError` rather than silently disabling a guard.
+Every field is validated at construction — range **and** type; an
+out-of-range, wrong-typed, or non-finite value raises `ValueError` rather
+than silently disabling a guard.
+
+ACL fine print: denying an `INTEGER PRIMARY KEY` alias also nulls reads via
+`rowid`/`_rowid_`/`oid` (SQLite reports those under the alias name). The
+implicit ROWID of a table with no alias is a row address, not a data column,
+and cannot be listed. A schema wider than `max_columns` still opens: each
+connection parses the schema under SQLite's default limit first, then the
+limit drops to exactly `max_columns` for the untrusted statements that
+follow.
 
 ### Exceptions
 
@@ -170,7 +226,7 @@ failure path ever returns an empty result.
 
 | exception | raised when |
 |---|---|
-| `QueryDenied` | the authorizer refused an operation (write, PRAGMA, ATTACH, denied function, ACL-hidden table) |
+| `QueryDenied` | the authorizer refused an operation (write, PRAGMA other than the two documented read-only counters, ATTACH, denied function, ACL-hidden table) |
 | `QueryTimeout` | the `deadline_s` wall-clock limit elapsed |
 | `TruncatedResult` | `query()`/`stream()` hit `max_rows` (use `fetch()` to accept a partial) |
 | `ResultBudgetExceeded` | the byte budget or column ceiling was crossed |
@@ -182,8 +238,9 @@ The threat model and what is explicitly **out** of scope (a hostile operator,
 host memory outside the result set, single-op CPU, C extensions, DoS by
 valid-looking load) are in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). The
 enforcement was developed against three independent adversarial passes (13
-findings, all fixed and captured as regression tests) plus a property-based
-fuzzer that re-checks the invariants against random policies and queries.
+findings) and a fourth external review round, all findings fixed and captured
+as regression tests, plus a property-based fuzzer that re-checks the
+invariants against random policies and queries.
 
 ```
 pytest                              # the full suite, incl. a fuzz budget
@@ -210,6 +267,15 @@ pip install "sqlite-cage @ git+https://github.com/mhalle/sqlite-cage"
 Or vendor it — it is a single stdlib-only module (`src/sqlite_cage/__init__.py`),
 and copying that one file into a project is a supported, dependency-free way
 to use it.
+
+Floors, both checked at import: Python ≥ 3.12 (`Connection.setlimit` and
+`setconfig`, so `DBCONFIG_DEFENSIVE` is universal) and SQLite ≥ 3.37.0
+(read-only WAL opens, `DBCONFIG_DEFENSIVE`, `trusted_schema`, and
+engine-typed shadow enumeration via `PRAGMA table_list`). Both floors are
+about the *interpreter*, not the OS: a
+[uv](https://docs.astral.sh/uv/)-managed Python is current and bundles a
+current SQLite even where the distro ships an old `libsqlite3`, so on older
+platforms install Python with uv rather than using the system interpreter.
 
 ## License
 

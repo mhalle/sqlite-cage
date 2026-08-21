@@ -20,7 +20,7 @@ changelog even when technically compatible.
 ## Before tagging
 
 1. Working tree clean, on `main`, up to date with `origin`.
-2. CI green on `main` — the matrix suite (3.11–3.13) plus the seeded fuzz.
+2. CI green on `main` — the matrix suite (3.12–3.13) plus the seeded fuzz.
    Never tag a red or stale commit.
 3. Locally, as a final gate:
    ```

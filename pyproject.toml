@@ -7,7 +7,7 @@ name = "sqlite-cage"
 dynamic = ["version"]                  # single-sourced from the module's __version__
 description = "Run untrusted SQL against SQLite safely and honestly — the query protections of Datasette, without Datasette."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "Michael Halle" }]
 keywords = ["sqlite", "sql", "sandbox", "security", "llm", "agent", "mcp",
@@ -17,7 +17,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Database",

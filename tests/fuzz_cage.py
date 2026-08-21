@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.12"
 # dependencies = ["sqlite-cage"]
 # ///
 """Property-based adversarial fuzzer for sqlite-cage.
@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -67,9 +68,9 @@ def _schema(path):
 def gen_policy(rng, tables):
     p = dict(deadline_s=rng.choice([0.3, 0.5, 1.0, 2.0]),
              max_rows=rng.choice([0, 1, 5, 100, 1000]),
-             max_result_bytes=rng.choice([50_000, 1 << 20, 8 << 20]),
+             max_result_bytes=rng.choice([50_000, 1 << 20, 64 << 20]),
              max_concurrency=rng.choice([1, 2, 3, 5]),
-             max_columns=rng.choice([4, 16, 64]))
+             max_columns=rng.choice([4, 16, 64, 256]))
     if rng.random() < 0.3:
         p["deny_functions"] = frozenset(rng.sample(DENIABLE, rng.randint(1, 3)))
     base = [t for t in tables if not t.startswith("docs_fts")]
@@ -80,8 +81,12 @@ def gen_policy(rng, tables):
                           if cols and rng.random() < 0.7 else {t: None})
     invalid = rng.random() < 0.12
     if invalid:
+        # 0/-1 are out of range; True (a bool) and inf must ALSO be rejected
+        # by the type-strict validation (round 4) for every one of these.
         p[rng.choice(["deadline_s", "max_concurrency", "progress_every_ops",
-                      "max_length", "max_columns"])] = rng.choice([0, -1])
+                      "max_length", "max_columns", "max_like_pattern",
+                      "max_function_args", "max_bound_params"])] = rng.choice(
+                          [0, -1, True, float("inf")])
     return p, invalid
 
 
@@ -141,7 +146,13 @@ def check_case(cage, sql, category):
     if qk == "raw":
         return f"I1 raw error from query(): {type(qv).__name__}: {qv}"
     if fk == "cage" and qk == "cage":
-        if category == "deny" and not isinstance(qv, QueryDenied):
+        # A deny-category query must be REFUSED, normally as QueryDenied.
+        # ResultBudgetExceeded is also acceptable: under a tight max_columns
+        # the engine's width limit can fire during prepare before the
+        # authorizer gets a look (e.g. SELECT * FROM pragma_table_info is 6
+        # columns) — still a compile-time refusal, nothing executed.
+        if category == "deny" and not isinstance(
+                qv, (QueryDenied, ResultBudgetExceeded)):
             return f"I5 write/meta not denied: {type(qv).__name__}"
         if category == "bad" and not isinstance(qv, (QueryError, QueryDenied)):
             return f"I7 bad-syntax wrong type: {type(qv).__name__}"
@@ -178,40 +189,60 @@ def check_case(cage, sql, category):
     return None
 
 
+# Distinct policies seen across a long run number in the hundreds; keeping a
+# cage (and its pooled connections) alive for every one of them exhausted
+# file descriptors (round 4). A small LRU keeps the cache-hit benefit while
+# bounding live cages; evicted and finished cages are CLOSED, and n_policies
+# counts every construction, not just the live ones.
+MAX_LIVE_CAGES = 16
+
+
 def fuzz(db_path, n=2000, seed=None):
     seed = random.randrange(1 << 30) if seed is None else seed
     rng = random.Random(seed)
     tables = _schema(db_path)
-    cages, viols = {}, []
-    for _ in range(n):
-        pol, reject = gen_policy(rng, tables)
-        key = json.dumps(pol, default=list, sort_keys=True)
-        if reject:
+    cages, viols, n_policies = OrderedDict(), [], 0
+    try:
+        for _ in range(n):
+            pol, reject = gen_policy(rng, tables)
+            key = json.dumps(pol, default=list, sort_keys=True)
+            if reject:
+                try:
+                    CagePolicy(**pol)
+                    viols.append(("I8 invalid policy accepted", pol, None, seed))
+                except ValueError:
+                    pass
+                continue
+            if key in cages:
+                cages.move_to_end(key)
+            else:
+                n_policies += 1
+                try:
+                    cages[key] = Cage(db_path, CagePolicy(**pol))
+                except Exception as e:
+                    viols.append((f"valid policy rejected: {e}", pol, None, seed))
+                    cages[key] = None
+                while len(cages) > MAX_LIVE_CAGES:
+                    _, old = cages.popitem(last=False)
+                    if old is not None:
+                        old.close()
+            cage = cages[key]
+            if cage is None:
+                continue
+            sql, cat = gen_query(rng, tables)
             try:
-                CagePolicy(**pol)
-                viols.append(("I8 invalid policy accepted", pol, None, seed))
-            except ValueError:
-                pass
-            continue
-        if key not in cages:
-            try:
-                cages[key] = Cage(db_path, CagePolicy(**pol))
+                v = check_case(cage, sql, cat)
             except Exception as e:
-                viols.append((f"valid policy rejected: {e}", pol, None, seed))
-                cages[key] = None
-        cage = cages[key]
-        if cage is None:
-            continue
-        sql, cat = gen_query(rng, tables)
-        try:
-            v = check_case(cage, sql, cat)
-        except Exception as e:
-            v = f"HARNESS: {type(e).__name__}: {e}"
-        if v:
-            viols.append((v, pol, sql, seed))
-            if len(viols) >= 20:
-                break
-    return seed, len(cages), viols
+                v = f"HARNESS: {type(e).__name__}: {e}"
+            if v:
+                viols.append((v, pol, sql, seed))
+                if len(viols) >= 20:
+                    break
+    finally:
+        for cage in cages.values():
+            if cage is not None:
+                cage.close()
+    return seed, n_policies, viols
 
 
 def main():
