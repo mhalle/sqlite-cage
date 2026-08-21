@@ -9,6 +9,13 @@
   remediation; the stopping-rule narrative corrected — the R4.6
   duplicate-name find was in the settled 0.1.0 core, not the new code;
   `CagePolicy` gained a class docstring; tag-pinned install example.
+- Docs correction on `immutable`/`refresh()`: replacement staleness is fd
+  pinning, not an immutable-mode artifact — pooled connections in EITHER
+  open mode keep reading a replaced file's old inode, so `refresh()` after
+  an atomic republish applies regardless of mode (now covered by a
+  default-mode regression test). `immutable=True` guidance narrowed to
+  where it earns its risk: read-only media, or network filesystems with
+  broken/slow locking — not ordinary static files on local disk.
 
 ## [0.2.0] — 2026-08-20
 

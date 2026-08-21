@@ -40,7 +40,7 @@ becomes a confidently wrong answer with no signal.
 | a guard silently disabled by degenerate config | construction-time policy validation — range AND type (bool/inf/nan/bare-string all refused), fail-closed | R3, R4 |
 | a write compiling despite the authorizer; schema-embedded functions running trusted; quadratic LIKE patterns; huge `?NNN` bind vectors | engine layers on every connection: `query_only`, `trusted_schema=OFF` (no-op pre-3.31), and limits on LIKE-pattern length, function arity, and bind-parameter numbers | R4.4 |
 | security config that LOOKS active but is inert or self-conflicting (typo'd ACL; `"docs"`/`"DOCS"` duplicate keys resolving last-wins) | ACL resolved against the real schema at construction; unknown names and case-folded duplicate keys raise | R4, R4.3 |
-| revoked data still served after a FAILED refresh (replaced immutable file whose schema the ACL cannot resolve) | a failed rebuild taints the cage: connections retired, every query refused until a rebuild succeeds (queries attempt the heal) | R4.3 |
+| revoked data still served after a FAILED refresh (a replaced file whose schema the ACL cannot resolve — pooled fds pin the old inode in either open mode) | a failed rebuild taints the cage: connections retired, every query refused until a rebuild succeeds (queries attempt the heal) | R4.3 |
 | path interpreted as URI syntax / chdir redirection | resolved absolute path, `as_uri()` percent-escaping, regular-file check | R4 |
 | enforcement loosened after construction | ACL/denylist snapshotted immutably at construct; snapshot REBUILDS (refresh(), epoch) re-resolve from that frozen spec, never the mutable policy | R3, R4.2 |
 

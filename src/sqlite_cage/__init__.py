@@ -1149,12 +1149,13 @@ class Cage:
         Queries already do this automatically when a live writer bumps
         `schema_version`, so most deployments never need to call it. It
         exists for what the automatic check cannot see or should not wait
-        for: an `immutable=True` cage whose file was atomically REPLACED
-        (an immutable connection never re-reads the header, so the swap is
-        invisible until the pool is rebuilt — the republish-a-corpus
-        pattern; queries in flight during the swap are the operator's
-        timing to manage), and surfacing an ACL that no longer resolves as
-        an eager ValueError here rather than as QueryDenied at the next
+        for: a file atomically REPLACED under the cage (pooled connections
+        pin the old inode through their open descriptors in EITHER open
+        mode, and the epoch check reads the old header through the same
+        descriptor — the republish-a-corpus pattern; queries in flight
+        during the swap are the operator's timing to manage), and
+        surfacing an ACL that no longer resolves as an eager ValueError
+        here rather than as QueryDenied at the next
         query. On failure (ValueError, or the schema being unreadable) the
         cage is left TAINTED and fails closed: existing connections are
         retired and every query raises until a rebuild succeeds — either an

@@ -718,17 +718,18 @@ def test_refresh_surfaces_acl_mismatch_eagerly(tmp_path):
         writer.close()
 
 
-def test_refresh_catches_replaced_immutable_file(tmp_path):
-    """The case the automatic check CANNOT see: an immutable connection
-    never re-reads the header, so an atomic file replacement is invisible
-    until refresh() rebuilds the pool."""
+def _replaced_file_needs_refresh(tmp_path, **cage_kw):
+    """An atomic os.replace() is invisible to pooled connections in EITHER
+    open mode: their open descriptors pin the old inode, and the epoch check
+    reads the old header through the same descriptor. refresh() rebuilds the
+    pool against the new file."""
     old = tmp_path / "corpus.sqlite"
     conn = sqlite3.connect(old)
     conn.execute("CREATE TABLE docs(id INTEGER PRIMARY KEY)")
     conn.execute("INSERT INTO docs VALUES (1)")
     conn.commit()
     conn.close()
-    cage = Cage(old, immutable=True)
+    cage = Cage(old, **cage_kw)
     assert cage.query("SELECT count(*) AS n FROM docs")[0]["n"] == 1
 
     new = tmp_path / "corpus-v2.sqlite"
@@ -743,6 +744,17 @@ def test_refresh_catches_replaced_immutable_file(tmp_path):
     cage.refresh()
     assert cage.query("SELECT count(*) AS n FROM docs")[0]["n"] == 7
     cage.close()
+
+
+def test_refresh_catches_replaced_immutable_file(tmp_path):
+    _replaced_file_needs_refresh(tmp_path, immutable=True)
+
+
+def test_refresh_catches_replaced_file_default_mode(tmp_path):
+    """Same staleness and same remedy WITHOUT immutable — replacement
+    staleness is fd pinning, not an immutable-mode artifact (documented
+    accordingly)."""
+    _replaced_file_needs_refresh(tmp_path)
 
 
 def test_refresh_on_closed_cage_raises(db):

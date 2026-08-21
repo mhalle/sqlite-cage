@@ -129,11 +129,14 @@ regular file, or a `CageError` if it cannot be opened. Construct one cage per
 trust level and reuse it; it owns a small connection pool. Requires Python ≥
 3.12 and SQLite ≥ 3.37.0 (both checked at import).
 
-Pass `immutable=True` (a real bool — anything else raises) **only** for a
-file that cannot change by any means while the cage lives (a baked corpus, a
-read-only container image): SQLite then skips locking and ignores
-`-wal`/`-journal` entirely, which is faster — and wrong on a database that
-changes.
+Pass `immutable=True` (a real bool — anything else raises) **only** when the
+file truly cannot change while the cage lives *and* skipping locks buys you
+something real: read-only media (a container image layer, a mounted ISO), or
+a network filesystem where POSIX locking is broken or slow. On ordinary
+local files the default's per-read locking is microseconds — and strictly
+more robust, since a stray in-place write stays consistent under locking but
+yields garbage under immutable. A static corpus on local disk should just
+use the default.
 
 Live writers are supported in the default mode: each execution checks the
 database's `schema_version`, and when a writer has changed the schema the
@@ -144,15 +147,16 @@ writer evolving the schema — an adversarial writer racing the cage is out of
 scope (see the threat model).
 
 `refresh()` triggers that same rebuild on demand. Its main job is the one
-case the automatic check cannot see: an `immutable=True` cage whose file was
-atomically **replaced** (immutable connections never re-read the header, so
-the swap is otherwise invisible) — republish the corpus file, call
-`refresh()`, and subsequent queries read the new one. It also surfaces an
-ACL that no longer resolves as an eager `ValueError` instead of at the next
-query. A **failed** rebuild taints the cage: every query raises until a
-rebuild succeeds (queries retry the rebuild themselves, so restoring a
-compatible file heals it) — never the old data, which is the point when the
-replacement was a revocation.
+case the automatic check cannot see: a file that was atomically **replaced**
+(`os.replace` / `mv`). Pooled connections hold open file descriptors, so in
+*either* open mode they keep reading the old inode — the epoch check reads
+the old file's header through the same descriptor and cannot notice the
+swap. Republish the corpus file, call `refresh()`, and subsequent queries
+read the new one. It also surfaces an ACL that no longer resolves as an
+eager `ValueError` instead of at the next query. A **failed** rebuild taints
+the cage: every query raises until a rebuild succeeds (queries retry the
+rebuild themselves, so restoring a compatible file heals it) — never the old
+data, which is the point when the replacement was a revocation.
 
 A cage is a context manager; after `close()` (explicit or via `with`), every
 call raises `CageError` — in-flight queries finish, and their connections are
